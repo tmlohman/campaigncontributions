@@ -1,0 +1,780 @@
+---
+title: "P4 Explore and Summarize Data"
+author: "Tegan Lohman"
+date: "June 29, 2016"
+output: html_document
+---
+
+```{r libraries, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+#load libraries
+library('rworldmap')
+library('ggmap')
+library('ggplot2')
+library('gridExtra')
+library('data.table')
+library('zoo')
+library('dplyr')
+library('lubridate')
+library('maps')
+
+```
+
+```{r, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+#load and clean up the data
+campaign <- read.csv('CAcontributions.csv', header = T, 
+                     row.names = NULL)
+
+campaign <- subset(campaign, select = -row.names)
+campaign <- subset(campaign, select = -cmte_id)
+campaign <- subset(campaign, select = -memo_cd)
+campaign <- subset(campaign, select = -contbr_city)
+campaign <- subset(campaign, select = -contb_receipt_dt)
+campaign <- subset(campaign, select = -receipt_desc)
+campaign <- subset(campaign, select = -memo_text)
+campaign <- subset(campaign, select = -tran_id)
+campaign <- subset(campaign, select = -election_tp)
+campaign <- subset(campaign, select = -form_tp)
+
+
+# fixing column names
+setnames(campaign, "cand_id", "candidate")
+setnames(campaign, "cand_nm", "donor_name")
+setnames(campaign, "contbr_nm", "city")
+setnames(campaign, "contbr_st", "zip_code")
+setnames(campaign, "contbr_employer", "occupation")
+setnames(campaign, "contbr_zip", "employer")
+setnames(campaign, "contb_receipt_amt", "date")
+setnames(campaign, "contbr_occupation", "amount")
+
+str(campaign)
+
+# remove cancelled transactions
+campaign$abs_amount <- abs(campaign$amount)
+setorder(campaign, 'abs_amount', 'donor_name', 'date', 'amount')
+campaign_sum <- rollapply(zoo(campaign$amount), 2, sum)
+campaign_sum <- c(1, campaign_sum)
+campaign$sum <- campaign_sum
+campaign$sum <- ifelse(campaign$amount < 0, 0, campaign$sum)
+
+campaign <- subset(campaign, sum != 0 )
+
+# cast dates appropriately
+campaign$date <- as.Date(campaign$date, "%d-%b-%y")
+
+```
+
+## Preliminary Plots, Exploration, and Observations 
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+summary(campaign$amount)
+cat("Total dollars donated:", sum(campaign$amount))
+cat("Total count of donations: ", length(campaign$amount))
+cat("Total number of donors: ", length(unique(campaign$donor_name)))
+```
+  
+Nearly 110,000 Californians have made 641,704 contributions totaling about $83 million, with a median donation of $27 (sounds familiar!) and a mean donation of $130.
+
+### Who is getting the most donations?
+
+```{r, echo=FALSE, results = 'hide', message = FALSE, warning = FALSE}
+
+summary(campaign$candidate)
+# histogram of contribution count by candidate
+ggplot(data = campaign, aes(candidate)) +
+  geom_bar() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Count of Individual Donations by Candidate") +
+  scale_y_sqrt()
+```
+  
+Bernie Sanders has received the most individual donations by far, followed by Clinton, Cruz, Carson, and Rubio.  
+```{r, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+
+# group by candiate
+candidate_groups <- group_by(campaign, candidate)
+campaign.by_candidate <- summarise(candidate_groups, donation_total = sum(amount), donation_median = median(amount), donation_mean = mean(amount), donation_max = max(amount), donation_min = min(amount))
+
+# plot total donations by candidate
+ggplot(data = campaign.by_candidate, aes(x = reorder(candidate, -donation_total), 
+                                         y = donation_total/1000000)) +
+  geom_bar(stat = "identity") +
+  labs(y = "Total Donations, in millions", 
+       title = "Total Donations by Candidate") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+   
+Clinton has accrued the greatest total donations, at nearly $40M. Sanders is a distant second with nearly $20M, followed by Cruz, Rubio, Bush, and Carson.
+  
+Filtering out candidates with less than $1M total donations, we get a little clearer picture.  
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+# same plot as above, for candidates recieving over $1M
+ggplot(data = subset(campaign.by_candidate, donation_total > 1000000)
+       , aes(x = reorder(candidate, -donation_total), y = donation_total/1000000)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(breaks = seq(0, 40, 2)) +
+  labs(y = "Total Donations, in millions", title = "Total Donations by Candidate") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+  
+I would like some sense of who to actually consider further. California is a very blue state, so I could ask plenty of questions about Clinton and Sanders. The Republican candidates are a little trickier as there are so many of them, and by the time our primary came around, Trump was the only one left on the ticket. So I guess I'd like to see how money was being contributed when the different republicans dropped their candidacy.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+
+# build dataframe of candidates and withdrawal dates
+# data source: https://en.wikipedia.org/wiki/United_States_presidential_election,_2016_timeline
+
+candidate <- unique(campaign$candidate)
+candidate <- as.factor(candidate)
+parties <- c('democrat', 'republican', 'democrat', 'republican', 'republican',
+             'republican', 'democrat', 'republican', 'republican', 'republican',
+             'republican', 'republican', 'republican',  'democrat', 'democrat',
+             'green', 'republican', 'republican', 'republican',  'libertarian',
+             'republican', 'republican', 'republican', 'republican')
+parties <- as.factor(parties)
+date <- as.Date(c(NA, '2016-2-3', NA, '2016-2-1', '2016-5-3', '2016-3-4',
+                  '2015-11-2', '2016-2-20', '2016-2-10', '2016-4-15', 
+                  '2016-5-4', '2016-2-3', NA, '2015-10-20', '2016-2-1', 
+                  NA, '2015-9-21', '2015-12-21', '2015-11-17', NA, 
+                  '2016-2-10', '2015-9-11', '2015-12-29', '2016-2-12'))
+withdrawn <- as.factor(c('n', 'y', 'n', 'y', 'y', 'y', 'y', 'y', 'y', 'y', 
+                         'y', 'y', 'n', 'y', 'y', 'n', 'y', 'y', 'y', 'n', 
+                         'y', 'y', 'y', 'y'))
+
+candidate_withdrawals <- data.frame(candidate, parties, date, withdrawn)
+
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+# timeline of candidate withdrawals
+ggplot(data = candidate_withdrawals, aes(date, candidate)) +
+  geom_point(aes(color = factor(parties)))
+
+```
+  
+Looks like a lot of candidates dropped out around February, and no green or libertarian candidates dropped out, because each of those parties only had one to begin with.   
+
+### How have donations come in over time?
+  
+```{r, echo = FALSE, results = 'hide', fig.width = 16, message = FALSE, warning = FALSE}
+
+summary(campaign$amount)
+
+# summarize contributions by candidate and date
+candidate_groups.date <- group_by(campaign, candidate, date)
+campaign.by_candidate_date <- summarise(candidate_groups.date, 
+                                        donation_total = sum(amount), 
+                                        donation_median = median(amount),
+                                        donation_mean = mean(amount))
+
+# fix date scales
+campaign.by_candidate_date$date <- 
+  as.Date(campaign.by_candidate_date$date, "%d-%b-%y")
+head(campaign.by_candidate_date)
+
+# plot daily donations vs. date by candidate
+ggplot(data = subset(campaign.by_candidate_date, date > "2015-03-01"), 
+       aes(date, donation_total/1000)) +
+  geom_line(aes(color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous(breaks = seq(0, 500, 50)) +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time") 
+
+
+```
+  
+This plot is very busy and hard to make sense of. I would like to overlay the withdrawals data to see what happens to donations when a candidate withdraws. Do they just slow down, or do they stop completely?
+
+```{r, echo = FALSE, results = 'hide', fig.width = 16, message = FALSE, warning = FALSE}
+
+# add withdrawal dates to campaign date totals dataframe
+campaign.by_candidate_date2 <- merge(campaign.by_candidate_date,
+                                     candidate_withdrawals, 
+                                     by = c('candidate', 'date'), all = TRUE)
+
+campaign.by_candidate_date2$donation_total[is.na(campaign.by_candidate_date2$donation_total)] <- 0
+
+```
+
+```{r, echo = FALSE, fig.width = 16, message = FALSE, warning = FALSE}
+# total donations by day for each candidate
+ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01")) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous(breaks = seq(0, 500, 50)) +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time") +
+  geom_point(data = subset(campaign.by_candidate_date2, withdrawn == "y"), 
+             aes(date, donation_total/1000, color = candidate))
+
+```
+  
+This plot is not any clearer. I want to zoom in.
+```{r, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+# group campaigns by the max donations they've recieved in a single day
+candidate_groups <- group_by(campaign.by_candidate_date2, candidate)
+max_day <- summarize(candidate_groups, max(donation_total))
+summary(max_day)
+
+# create levels based on max day quartiles
+max_day$campaign_size = cut(max_day$`max(donation_total)`, 
+                            c(0, 7842, 37680, 17407, 447406), labels = FALSE)
+
+# make an array for candidates in each size campaign
+campaign1 <- subset(max_day$candidate, max_day$campaign_size == 1)
+campaign2 <- subset(max_day$candidate, max_day$campaign_size == 2)
+campaign3 <- subset(max_day$candidate, max_day$campaign_size == 3)
+campaign4 <- subset(max_day$candidate, max_day$campaign_size == 4)
+
+```
+
+
+```{r, echo = FALSE, fig.height = 16, fig.width = 16, message = FALSE, warning = FALSE}
+
+p1 <- ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                       candidate %in% campaign1)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time, Q1") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign1 & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+
+p2 <- ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                       candidate %in% campaign2)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time, Q2") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign2 & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+
+p3 <- ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                       candidate %in% campaign3)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time, Q3") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign3 & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+
+p4 <- ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                       candidate %in% campaign4)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time, Q4") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign4 & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+
+grid.arrange(p1, p2, p3, p4, ncol = 1)
+
+```
+  
+These graphs indidate that when a campaign ends, donations stop immediately, or in some cases continue for a short time. I am surprised by how many candidates are in the top quartile, which is still pretty crowded and hard to interpret. Perhaps viewing it alone will help.  
+```{r, echo = FALSE, fig.width = 16, fig.height = 12, message = FALSE, warning = FALSE}
+p4
+```
+  
+Several candidates clearly don't belong in this group. Rand Paul, John Kasich, Ben Carson, etc. are nowhere near Clinton and Sanders. Perhaps the problem is grouping them by max day rather than average day.
+
+```{r, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+
+# group campaigns by the max donations they've recieved in a single day
+candidate_groups <- group_by(campaign.by_candidate_date2, candidate)
+avg_day <- summarize(candidate_groups, mean(donation_total))
+summary(avg_day)
+
+# create levels based on max day quartiles
+avg_day$campaign_size = cut(avg_day$`mean(donation_total)`, 
+                            c(0, 1485, 3942, 9495, 93614), labels = FALSE)
+
+# make an array for candidates in each size campaign
+campaign1a <- subset(avg_day$candidate, avg_day$campaign_size == 1)
+campaign2a <- subset(avg_day$candidate, avg_day$campaign_size == 2)
+campaign3a <- subset(avg_day$candidate, avg_day$campaign_size == 3)
+campaign4a <- subset(avg_day$candidate, avg_day$campaign_size == 4)
+
+```
+
+```{r, echo = FALSE, fig.height = 16, fig.width = 16, message = FALSE, warning = FALSE}
+p1 <- ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                       candidate %in% campaign1a)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time, Q1") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign1a & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+
+p2 <- ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                             candidate %in% campaign2a)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time Q2") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign2a & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+
+p3 <- ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                       candidate %in% campaign3a)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time Q3") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign3a & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+
+p4 <- ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                       candidate %in% campaign4a)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations over Time Q4") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign4a & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+
+grid.arrange(p1, p2, p3, p4, ncol = 1)
+
+```
+  
+Using average values distributes the candidates more evenly and makes the top quartile easier to read.
+```{r, echo = FALSE, fig.height = 12, fig.width = 16, message = FALSE, warning = FALSE}
+p4
+```
+  
+In the top quartile, Clinton and Sanders dominate the chart, which is no surprise. Perry, Rubio, and Bush all experience a slow-down in donations before withdrawing their candidacy. Cruz, however, shows a sudden spike just before dropping out.  
+Does this represent one large donation, or many smaller ones?
+
+```{r, echo = FALSE}
+
+# donations to Ted Cruz within 1 week of his withdrawal
+cruz <- subset(campaign, candidate == "Cruz, Rafael Edward 'Ted'" & 
+                 date > '2016-4-26')
+
+cat("Total number of donations: ", length(cruz$amount))
+summary(cruz$amount)
+
+"Dates he received the max donation: "
+subset(campaign, candidate == "Cruz, Rafael Edward 'Ted'" & 
+                 date > '2016-4-26' & amount == 10800)$date
+
+cat("Total amount received on the day he resigned: ", subset(campaign.by_candidate_date2, candidate == "Cruz, Rafael Edward 'Ted'" & 
+                 date == '2016-5-3')$donation_total)
+
+cat("Max amount recieved on any day of his campaign: ", max(subset(campaign.by_candidate_date2, candidate == "Cruz, Rafael Edward 'Ted'")$donation_total))
+
+```
+  
+It seems that Californians really did not want Trump! Cruz received more money on the day he withdrew than any other day in his campaign. Most of that came from small donations.  
+  
+It is still difficult to interpret the time graphs, so I will group the data by week and month to see if that clarifies anything.
+```{r, echo = FALSE, output = 'hide', warning = FALSE, fig.width = 16, fig.height = 16}
+
+# add columns to specify week and month for each date
+campaign$week <- format(campaign$date, format="%Y-%U")
+campaign$month <- format(campaign$date, format="%Y-%m")
+
+# group by week and month
+candidate_groups.week <- group_by(campaign, candidate, week)
+campaign.by_candidate_week <- summarise(candidate_groups.week, 
+                                        donation_total = sum(amount))
+candidate_groups.month <- group_by(campaign, candidate, month)
+campaign.by_candidate_month <- summarise(candidate_groups.month, 
+                                        donation_total = sum(amount))
+
+# plot by week and month
+p1 <- ggplot(data = subset(campaign.by_candidate_week,
+                       candidate %in% campaign4a)) +
+  geom_line(aes(week, donation_total/1000, color = candidate, 
+                group = candidate)) +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Week, in thousands of $", 
+       title = "Candidate Donations By Week Q4") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p2 <- ggplot(data = subset(campaign.by_candidate_month,
+                       candidate %in% campaign4a)) +
+  geom_line(aes(month, donation_total/1000, color = candidate, 
+                group = candidate)) +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Month, in thousands of $", 
+       title = "Candidate Donations By Month Q4")
+
+grid.arrange(p1, p2, ncol = 1)
+```
+  
+In aggregating the data down by week, we can see that the democratic candidates experience more variation in contributions than the republican candidates. By month, it becomes clear that Sanders' campaign peaked around March, which was tonly mnth where his donation exceeded Clinton's. Both dropped after that, but Clinton's began to rise again after April. This make sense, as April was around the time that it became clear that Sanders was probably not going to win the democratic primary.
+
+## Sanders vs. Clinton
+I'm now going to limit my investigation to just Sanders and Clinton, since that's what I'm most interested in, as well as, apparently, the vast majority of donating Californians.
+
+```{r, echo = FALSE, results = 'hide'}
+# subset dataframes to include only Sanders and Clinton
+
+SC_campaign <- subset(campaign, candidate == "Clinton, Hillary Rodham" | 
+                 candidate == "Sanders, Bernard")
+SC_daily_data <- subset(campaign.by_candidate_date2, 
+                        candidate == "Clinton, Hillary Rodham" | 
+                          candidate == "Sanders, Bernard")
+
+```
+  
+### How did donations track the primaries?
+
+```{r, echo = FALSE, results = 'hide'}
+# building data frame of primary dates and results
+# data source: https://www.google.com/search?q=democratic+primary+results+table&espv=2&biw=1535&bih=810&site=webhp&source=lnms&sa=X&ved=0ahUKEwjejqLl98vNAhUJwGMKHbndBJcQ_AUIBygA&dpr=1#q=democratic+primary+results+&eob=m.09c7w0/D/6/full/m.09c7w0/
+
+state <- as.character(c("Iowa","New Hampshire","Nevada","South Carolina", "Alabama",
+                      "Colorado","Georgia","Massachusettes","Minnesota","Oklahoma",
+                      "Tennessee","Texas","Vermont","Virginia","Kansas","Louisiana",
+                      "Nebraska","Maine","Michigan","Mississippi","Ohio","Florida",
+                      "Illinois","Missouri","North Carolina", "Arizona", "Idaho",
+                      "Utah", "Alaska","Hawaii","Washington","Wisconsin","Wyoming",
+                      "New York", "Delaware","Conneticut","Rhode Island","Maryland",
+                      "Pennsylvania","Indiana","West Virgina","Kentucky",
+                      "Oregon","North Dakota","California","Montana","New Jersey",
+                      "New Mexico","South Dakota","Washington DC"))
+
+date <- as.Date(c("2016-02-01","2016-02-09","2016-02-20","2016-02-27","2016-03-01",
+                  "2016-03-01","2016-03-01","2016-03-01","2016-03-01","2016-03-01",
+                  "2016-03-01","2016-03-01","2016-03-01","2016-03-01","2016-03-05",
+                  "2016-03-05","2016-03-05","2016-03-06","2016-03-08","2016-03-08",
+                  "2016-03-15","2016-03-15","2016-03-15","2016-03-15","2016-03-15",
+                  "2016-03-22","2016-03-22","2016-03-22","2016-03-26","2016-03-26",
+                  "2016-03-26","2016-04-05","2016-04-09","2016-04-19","2016-04-26",
+                  "2016-04-26","2016-04-26","2016-04-26","2016-04-26","2016-05-03",
+                  "2016-05-10","2016-05-17","2016-05-17","2016-06-07","2016-06-07",
+                  "2016-06-07","2016-06-07","2016-06-07","2016-06-07","2016-06-14"))
+
+clinton_delegates <- as.numeric(c(23,9,20,39,44,25,73,46,46,17,44,147,0,62,10,37,10,8,63,31,81,141,79,36,60,42,5,6,3,8,27,38,7,139,12,28,11,60,106,39,11,28,25,5,269,10,79,18,10,16))
+
+sanders_delegates <- as.numeric(c(21,15,15,14,9,41,29,45,31,21,23,75,16,33,23,14,15,17,67,5,62,73,77,35,47,33,18,27,13,17,74,48,7,108,9,27,13,35,83,44,18,27,36,13,206,11,47,16,10,4))
+
+winner <- as.factor(c("Clinton","Sanders","Clinton","Clinton","Clinton","Sanders",
+                      "Clinton","Clinton","Sanders","Sanders","Clinton","Clinton",
+                      "Sanders","Clinton","Sanders","Clinton","Sanders","Sanders",
+                      "Sanders","Clinton","Clinton","Clinton","Clinton","Clinton",
+                      "Clinton","Clinton","Sanders","Sanders","Sanders","Sanders",
+                      "Sanders","Sanders","Sanders","Clinton","Clinton","Clinton",
+                      "Sanders","Clinton","Clinton","Sanders","Sanders","Clinton",
+                      "Sanders","Sanders","Clinton","Sanders","Clinton","Clinton",
+                      "Clinton","Clinton"))
+
+primaries <- data.frame(state, date, clinton_delegates, sanders_delegates, winner)
+
+primaries$clinton_total <- cumsum(primaries$clinton_delegates)
+primaries$sanders_total <- cumsum(primaries$sanders_delegates)
+```
+
+
+```{r, echo = FALSE, results = 'hide'}
+# create subset for each candidate showing their cumulative donations by day
+clinton_daily_cum <- subset(campaign.by_candidate_date2, 
+                            candidate == "Clinton, Hillary Rodham")
+clinton_daily_cum$daily_cum <- cumsum(clinton_daily_cum$donation_total)
+sanders_daily_cum <- subset(campaign.by_candidate_date2, 
+                            candidate == "Sanders, Bernard")
+sanders_daily_cum$daily_cum <- cumsum(sanders_daily_cum$donation_total)
+
+# plot daily cumulative donations and cumulative delegates
+ggplot()  +
+  geom_line(data = subset(clinton_daily_cum, date > "2016-1-01"), 
+            aes(date, daily_cum/10000, color = 'red')) +
+    geom_line(data = subset(sanders_daily_cum, date > "2016-1-01"), 
+            aes(date, daily_cum/10000, color = 'blue')) +
+  geom_point(data = primaries, aes(date, clinton_total, color = 'red')) +
+  geom_point(data = primaries, aes(date, sanders_total, color = 'blue'))
+
+
+```
+  
+The above plot shows the daily cumulative donations to Clinton (blue) and Sanders (red) alongside their delgate counts (indicated as points). There doesn't appear to be any strong correlation between wins and donations. Both candidates have recieved a pretty steady and predictable stream of money.
+
+### What about Trump?
+Since ignoring Trump in the hopes he'll go away has not proven to be an effective strategy, I'll have a look at his data as well. I'm wondering if Californians have grown more or less supportive over time.
+
+```{r, echo = FALSE, results = 'hide', message = FALSE, warning = FALSE}
+trump_daily_cum <- subset(campaign.by_candidate_date2, 
+                          candidate == "Trump, Donald J.")
+trump_daily_cum$daily_cum <- cumsum(trump_daily_cum$donation_total)
+
+# cumulative donations to Trump over time
+ggplot(data = trump_daily_cum,
+       aes(date, daily_cum)) +
+  geom_line()
+
+```
+  
+Trump's support in California is growing, particularly since February, when many of his contenders dropped out.  
+
+## Who is donating, and how much?
+I'm going to zoom back out into the larger dataset and subset it to the largest campaigns for clarity. This will include the top quartile by daily total, as well as Donald Trump since he is the presumptive Republican nominee at this point.
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+
+big_candidate <- c('Bush, Jeb', 'Perry, James R. (Rick)',
+                         'Clinton, Hillary Rodham', 'Cruz, Rafael Edward `Ted`',
+                         'Trump, Donald J.', 'Rubio, Marco', 'Sanders, Bernard')
+
+campaign.big <- subset(campaign, candidate %in% big_candidate)
+"Summary of all campaigns:"
+summary(campaign$amount)
+"Summary of the big campaigns:"
+summary(campaign.big$amount)
+
+```
+  
+There doesn't appear to be a great deal of difference between the donations recieved by the candidates recieving the most money, and the candidate pool as a whole. 
+
+### How much do people typically donate? Do some candidates elicit larger donations than others?
+```{R, echo = FALSE, warning = FALSE, fig.height = 6, fig.width = 16}
+
+
+p1 <- ggplot(data = campaign.big, aes(amount)) +
+  geom_histogram(binwidth = 5, aes(fill = candidate)) +
+  scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 10)) +
+  labs(x = "Donation Amount", title = "Donation Counts, $100 or less") +
+  scale_y_continuous(breaks = seq(0, 110000, 5000))
+
+p2 <- ggplot(data = campaign.big, aes(amount)) +
+  geom_histogram(binwidth = 250, aes(fill = candidate)) +
+  scale_x_continuous(limits = c(101, 3000), breaks = seq(0, 3000, 500)) +
+  labs(x = "Donation Amount", title = "Donation Counts, $101-$3,000") +
+  scale_y_continuous(breaks = seq(0, 40000, 1000))
+
+p3 <- ggplot(data = campaign.big, aes(amount)) +
+  geom_histogram(binwidth = 250, aes(fill = candidate)) +
+  scale_x_continuous(limits = c(3001, NA), breaks = seq(3000, 10000, 1000)) +
+  labs(x = "Donation Amount", title = "Donation Counts, over $3,000") +
+  scale_y_continuous(breaks = seq(0, 6, 1), limits = c(0, 6))
+
+
+
+grid.arrange(p1, p2, p3, ncol = 3)
+```
+  
+The most common donation amount is $50 for all candidates, and people tend to round their donations to certain predictable values (eg. $25, $250, $5,000, etc.). Sanders has recieved far more small donations than Clinton, and it appears that the $27 marketing campaign was a success. Surprisingly, Sanders has also recieved more very large donations than Clinton, while the bulk of Clinton's money has come in $100-$3,000 increments.  
+
+
+### What about geography?
+```{R, fig.width = 16, warning = FALSE, results = 'hide', message = FALSE, echo = FALSE}
+
+levels(campaign.big$city)
+
+# look up coordinates
+ca.limits <- geocode("California, United States", output = ("all"))
+
+# failing that, hack it
+ca_map <- get_map(location = "California", zoom = 6, maptype = "toner")
+# plot(ca_map)
+
+
+# summarize data set
+str(campaign.big)
+city_groups.candidate <- group_by(campaign.big, candidate, city)
+campaign.big_candidate_city <- summarise(city_groups.candidate, 
+                                         donation_total = sum(amount),
+                                         donation_median = median(amount),
+                                         donation_mean = mean(amount),
+                                         donation_count = sum(amount)/mean(amount))
+
+city_groups <- group_by(campaign.big, city)
+donations.by_city <- summarise(city_groups, 
+                               donation_total = sum(amount),
+                               donation_median = median(amount), 
+                               donation_mean = mean(amount),
+                               donation_count = sum(amount)/mean(amount))
+
+
+# convert cities to lat/lon
+donations.by_city$city <- as.character(donations.by_city$city)
+class(donations.by_city$city)
+str(campaign.big_candidate_city)
+
+# coord <- geocode(donations.by_city$city, output = ("latlon"))
+# save(coord, file = 'coordinates.Rda')
+coor <- load('coordinates.Rda')
+
+donations.by_city$lat <- coord$lat
+donations.by_city$lon <- coord$lon
+
+# put data on the map
+ca_map <- get_map(location = "California", zoom = 6, maptype = "toner")
+# plot(ca_map)
+
+m1 <- ggmap(ca_map) +
+  geom_point(data = donations.by_city, aes(lon, lat, size = donation_count), 
+             color = 'purple',alpha = 0.25) +
+  ggtitle("Donation Count by City")
+
+m2 <- ggmap(ca_map) +
+  geom_point(data = donations.by_city, aes(lon, lat, size = donation_total), 
+             color = 'orange', alpha = 0.5) +
+  ggtitle("Total Donations by City")
+
+m3 <- ggmap(ca_map) +
+  geom_point(data = donations.by_city, aes(lon, lat, size = donation_mean), 
+             color = 'red', alpha = 0.25) +
+  ggtitle("Mean Donation by City")
+
+grid.arrange(m1, m2, m3, ncol = 3)
+```
+  
+```{r, echo = FALSE}
+# The following code is commented out because it will take a long time to query the Google Maps API ~1400 times. 
+# The included citycoord CSV has all the data.
+
+#cities <- levels(campaign.big$city)
+#citycoord <- data.frame("city" = as.character(), "lat" = as.numeric(), 
+#                       "lon" = as.numeric(), stringsAsFactors = FALSE)
+#citycoord <- load('citycoordinates.Rda')
+#for (city in cities){
+#  citycoord[nrow(citycoord) + 1, ] <- c(city, geocode(city, output = "latlon"))
+#}
+# write.csv(citycoord, 'citycoordinates.csv')
+```
+Unsurprisingly, donations are concentrated in the major metropolitan areas, with no distinuishable difference in pattern between count, total donations, and mean donation size. But I wonder how the pattern might change if I isolate the data by candidate or party.
+
+```{R, fig.width = 16, warning = FALSE, results = 'hide', message = FALSE, echo = FALSE}
+citycoord <- read.csv(file = 'citycoordinates.csv')
+
+# group by cities and candidates
+city_candidate_groups <- group_by(campaign.big, city, candidate)
+donations.by_city_candidate <- summarise(city_candidate_groups, 
+                                         donation_total = sum(amount), 
+                                   donation_median = median(amount),
+                               donation_mean = mean(amount),
+                               donation_count = sum(amount)/mean(amount))
+
+
+# convert cities to lat/lon
+donations.by_city_candidate$lat <- citycoord[match(donations.by_city_candidate$city, 
+                                                   citycoord$city), "lat"]
+donations.by_city_candidate$lon <- citycoord[match(donations.by_city_candidate$city, 
+                                                   citycoord$city), "lon"]
+
+
+# put data on the map
+ca_map <- get_map(location = "California", zoom = 6, maptype = "toner")
+# plot(ca_map)
+
+
+m1 <- ggmap(ca_map) +
+  geom_point(data = subset(donations.by_city_candidate, 
+                           candidate == "Clinton, Hillary Rodham"), 
+             aes(lon, lat, size = donation_total), color = 'purple', alpha = 0.25) +
+  ggtitle("Donation Total by City, Clinton")
+
+m2 <- ggmap(ca_map) +
+  geom_point(data = subset(donations.by_city_candidate, 
+                           candidate == "Sanders, Bernard"), 
+             aes(lon, lat, size = donation_total), color = 'blue', alpha = 0.25) +
+  ggtitle("Donation Total by City, Sanders")
+
+m3 <- ggmap(ca_map) +
+  geom_point(data = subset(donations.by_city_candidate, 
+                           candidate == "Trump, Donald J."), 
+             aes(lon, lat, size = donation_total), color = 'red', alpha = 0.25) +
+  ggtitle("Donation Total by City, Trump")
+
+grid.arrange(m1, m2, m3, ncol = 3)
+
+```
+  
+These plots surprised me a little bit. I expected the donations for Clinton and Sanders to be concentrated in the major metropolitan areas (read: more liberal), but I am very surprised to see that Trump has also recieved the lion's share of his money, albeit much less, from the San Francsico and Los Angeles regions. I had expected him to recieve more money from the more rural central valley. I also noticed that Sanders' money has been better distributed thorough the state than either of his competitors. 
+
+## Final Plots
+
+### Donations Over Time
+```{r, echo = FALSE, fig.width = 16, fig.height = 12}
+ggplot(data = subset(campaign.by_candidate_date2, date > "2015-03-01" & 
+                       candidate %in% campaign4a)) +
+  geom_line(aes(date, donation_total/1000, color = candidate)) +
+  scale_x_date() +
+  scale_y_continuous() +
+  labs(y = "Total Donations by Day, in thousands", 
+       title = "Candidate Donations Over Time, Top Quartile Candidates") +
+  geom_point(data = subset(campaign.by_candidate_date2, 
+                           candidate %in% campaign4a & withdrawn == 'y'), 
+             aes(date, donation_total/1000, color = candidate))
+```
+  
+This plot shows the campaign donations over time of the largest campaigns, with their drop-out date, if applicable, shown as a point. Most notable is Ted Cruz's campaign, which recieved more money on the day he dropped out than any other day of his campaign. No other candidate recieved such a spike.  
+This plot also shows some remarkable spikes in Marco Rubio's campaign occuring in July and october of last year. I am curious about these sudden influxes of money.
+
+### Donation Size
+```{r, echo = FALSE, warning = FALSE, fig.width = 16, fig.height = 12}
+ggplot(data = campaign.big, aes(amount)) +
+  geom_histogram(binwidth = 5, aes(fill = candidate)) +
+  scale_x_continuous(limits = c(0, 100), breaks = seq(0, 100, 5)) +
+  labs(x = "Donation Amount ($)", title = "Donation Counts, $100 or less") +
+  scale_y_continuous(breaks = seq(0, 110000, 5000))
+```
+  
+I chose this plot as a clear reflection of what social media has been telling me for months: Bernie Sanders receives far more donations than any other candidate, and the average donation amount is $27. I suspect that that marketing has made the average the mode, as this plot depicts. It would be very interesting to do a time series of different donation amount against the Sanders marketing campaign, however this would require another data set.   
+
+### Donations by Location  
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+ggmap(ca_map) +
+  geom_point(data = subset(donations.by_city_candidate, 
+                           candidate == "Trump, Donald J."), 
+             aes(lon, lat, size = donation_total), color = 'red', alpha = 0.25) +
+  ggtitle("Donation Total by City, Trump")
+```
+  
+This plot was really surprising to me. I went in with the assumption that Trump would be recieving most of his money from the more rural central valley. But to the contrary, like his democratic competitors, most of his money is coming from the San Francisco and Los Angeles areas. This makes me very curious about who these people are. I live in Silicon Valley and have not seen any support for Trump around my community or on my social media. However, the data indicate that Trump's support, though smaller than the other candidates, is concetrated in my area.
+
+## Reflection  
+I really enjoyed this project, especially when the graphs offered insights that were not what I expected. It was neat to work with such a large data set and problem solve in areas that were totally new. Here were the most frustrating and worthwhile challenges:  
+  
+### Challenges and Solutions
+  
+* Getting the data loaded properly  
+    + I can't really recall why this was such a problem at this point, or what the solution was.   
+* My column headers were wrong so I had to reset them all. I knew how to do this but had some sytnax issues.  
+* Getting the date format correct took a great deal of trial and error.  
+    + The documentation for this is extremely simple and straightforward, but I kept getting a vague error messaage. 
+    + After what felt like endless googling and swearing, I put quotes around the format indicator (which none of the documentation or example showed) and that solved the problem.  
+* Getting a count of donations by groups  
+    + The count function (I also tried tally) did not work for me. I did not take very much time to troubleshoot it.  
+    + I cheated and divided the sum by the mean to get count.   
+* Getting the map of California bounded properly  
+    + Loading the map was relatively easy, as was looking up the appropriate coordinates  
+    + For some reason, the coordinates (which I verified outside of R) landed me somewhere in the Phillipines.  
+    + I triple checked my syntax, and there were definitely no mistakes in terms of how the coordinates were entered.  
+    + I ended up just mapping "California" and then using the zoom to show the appropriate area.
+* Setting up the data frame for the map by candiate
+    + My original coordinates data frame did not have the city names. This worked fine for the first set of maps, but when I broke it down by candidate I had to be able to match the city to the coordinates.
+   + It took me several tries to figure out how to do this, and due to the request limitations of the geocoord API, delayed my project a couple of days.
+  
+### Successes
+  
+* I am most proud of the map plots in this project. I had never worked with the maps API before, and was able to figure it out on my own using web resources. I ran into a lot of little problems, some described above, and managed to solve them all.  
+* I also spent a lot of time thinking about how to best represent data with such a wide range of values. I used two different strategies: axis transformations, and splitting up the data into multiple plots. I feel that I used both effectively, and that all my plots are easy to read as a result.
+
+### Ideas for Further Investigation
+  
+* I'm really curious about the apparent cyclical trend and spikes in the donations over time graphs. I would really like to see what correlates to the peaks. Is it social media trends? Certain hashtags or marketing? Do people tend to donate on a particular day of the week or month?
+* Who are the people giving money to the different candiates? I broke them down by the city they live in, but I overlooked the other information I had. Are there correlations by occupation or employer? For example, I was surprised to find that my assumption about where Trump's supporters live is false. So I also wonder if some other stereotypes I've been holding are also false - white collar vs. blue collar, for example.
+* I really ignored the third party candidates in this investigation because they have recieved so little money. But it would be interesting to see where Stein and Johnson are getting their donations from. 
+
+
